@@ -2,37 +2,65 @@ import os
 import re
 
 import streamlit as st
+
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.retrievers import BM25Retriever
+
 from transformers import pipeline
 
 
+# ============================================================
+# CONFIG
+# ============================================================
+
 VECTORSTORE_PATH = "vectorstore/langchain_faiss"
 
-FALLBACK = "I couldn't find that information in the documentation."
+FALLBACK = (
+    "I couldn't find that information in the documentation."
+)
 
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-LLM_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+EMBEDDING_MODEL = (
+    "sentence-transformers/all-MiniLM-L6-v2"
+)
 
+LLM_MODEL = (
+    "Qwen/Qwen2.5-0.5B-Instruct"
+)
+
+
+# ============================================================
+# EMBEDDINGS
+# ============================================================
 
 @st.cache_resource
 def get_embeddings():
+
     return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL
     )
 
 
+# ============================================================
+# GENERATOR
+# ============================================================
+
 @st.cache_resource
 def get_generator():
+
     return pipeline(
         "text-generation",
         model=LLM_MODEL
     )
 
 
+# ============================================================
+# LOAD RAG
+# ============================================================
+
 @st.cache_resource
 def load_rag():
+
     embeddings = get_embeddings()
 
     vectorstore = FAISS.load_local(
@@ -41,32 +69,52 @@ def load_rag():
         allow_dangerous_deserialization=True
     )
 
-    docs = list(vectorstore.docstore._dict.values())
+    docs = list(
+        vectorstore.docstore._dict.values()
+    )
 
-    bm25 = BM25Retriever.from_documents(docs)
+    bm25 = BM25Retriever.from_documents(
+        docs
+    )
+
     bm25.k = 5
 
     generator = get_generator()
 
-    return vectorstore, bm25, generator
+    return (
+        vectorstore,
+        bm25,
+        generator
+    )
 
+
+# ============================================================
+# REBUILD VECTORSTORE
+# ============================================================
 
 def rebuild_vectorstore(new_docs):
     """
-    Rebuild the FAISS index using the existing sample documentation
-    plus the newly uploaded documents.
+    Rebuild the FAISS vector store using the existing
+    documentation plus newly uploaded documents.
+
+    Every document receives a unique ID before being added
+    to FAISS.
     """
 
     embeddings = get_embeddings()
 
-    # --------------------------------------------------
-    # Load existing documentation if available
-    # --------------------------------------------------
+    # --------------------------------------------------------
+    # Load existing vectorstore
+    # --------------------------------------------------------
 
     existing_docs = []
 
-    if os.path.exists(VECTORSTORE_PATH):
+    if os.path.exists(
+        VECTORSTORE_PATH
+    ):
+
         try:
+
             existing_store = FAISS.load_local(
                 VECTORSTORE_PATH,
                 embeddings,
@@ -78,17 +126,21 @@ def rebuild_vectorstore(new_docs):
             )
 
         except Exception:
+
             existing_docs = []
 
-    # --------------------------------------------------
-    # Combine existing + new documents
-    # --------------------------------------------------
+    # --------------------------------------------------------
+    # Combine documents
+    # --------------------------------------------------------
 
-    all_docs = existing_docs + new_docs
+    all_docs = (
+        existing_docs +
+        new_docs
+    )
 
-    # --------------------------------------------------
-    # Deduplicate
-    # --------------------------------------------------
+    # --------------------------------------------------------
+    # Deduplicate documents
+    # --------------------------------------------------------
 
     unique = {}
 
@@ -102,19 +154,82 @@ def rebuild_vectorstore(new_docs):
 
         unique[key] = doc
 
-    all_docs = list(unique.values())
+    all_docs = list(
+        unique.values()
+    )
 
-    # --------------------------------------------------
+    # --------------------------------------------------------
+    # Generate guaranteed unique IDs
+    # --------------------------------------------------------
+
+    ids = []
+
+    for index, doc in enumerate(all_docs):
+
+        existing_id = doc.metadata.get(
+            "chunk_id"
+        )
+
+        if existing_id:
+
+            chunk_id = str(
+                existing_id
+            )
+
+        else:
+
+            source = str(
+                doc.metadata.get(
+                    "source",
+                    "document"
+                )
+            )
+
+            page = str(
+                doc.metadata.get(
+                    "page",
+                    "none"
+                )
+            )
+
+            chunk_id = (
+                f"{source}_{page}_{index}"
+            )
+
+        # Guarantee uniqueness even if old metadata
+        # contains duplicate IDs.
+        if chunk_id in ids:
+
+            chunk_id = (
+                f"{chunk_id}_{index}"
+            )
+
+        ids.append(
+            chunk_id
+        )
+
+        doc.metadata["chunk_id"] = (
+            chunk_id
+        )
+
+    # --------------------------------------------------------
     # Create FAISS
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     vectorstore = FAISS.from_documents(
         all_docs,
-        embeddings
+        embeddings,
+        ids=ids
     )
 
+    # --------------------------------------------------------
+    # Save
+    # --------------------------------------------------------
+
     os.makedirs(
-        os.path.dirname(VECTORSTORE_PATH),
+        os.path.dirname(
+            VECTORSTORE_PATH
+        ),
         exist_ok=True
     )
 
@@ -122,19 +237,31 @@ def rebuild_vectorstore(new_docs):
         VECTORSTORE_PATH
     )
 
-    # Clear cached RAG objects
+    # --------------------------------------------------------
+    # Clear cached RAG
+    # --------------------------------------------------------
+
     load_rag.clear()
 
     return vectorstore
 
 
+# ============================================================
+# CLEAN TEXT
+# ============================================================
+
 def clean_text(text):
+
     return re.sub(
         r"\s+",
         " ",
         text
     ).strip()
 
+
+# ============================================================
+# ASK QUESTION
+# ============================================================
 
 def ask_question(question):
 
@@ -143,36 +270,47 @@ def ask_question(question):
     question = question.strip()
 
     if not question:
-        return FALLBACK, []
 
-    # --------------------------------------------------
+        return (
+            FALLBACK,
+            []
+        )
+
+    # --------------------------------------------------------
     # Semantic search
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
-    semantic_results = vectorstore.similarity_search_with_score(
-        question,
-        k=8
+    semantic_results = (
+        vectorstore.similarity_search_with_score(
+            question,
+            k=8
+        )
     )
 
-    # Keep reasonably relevant semantic results
     semantic_docs = []
 
     for doc, score in semantic_results:
 
+        # FAISS L2 distance:
+        # lower score = better match
+
         if score <= 1.8:
+
             semantic_docs.append(
                 (doc, score)
             )
 
-    # --------------------------------------------------
+    # --------------------------------------------------------
     # Keyword search
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
-    keyword_docs = bm25.invoke(question)
+    keyword_docs = bm25.invoke(
+        question
+    )
 
-    # --------------------------------------------------
+    # --------------------------------------------------------
     # Combine results
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     candidates = {}
 
@@ -189,7 +327,9 @@ def ask_question(question):
             "score": score
         }
 
-    for rank, doc in enumerate(keyword_docs):
+    for rank, doc in enumerate(
+        keyword_docs
+    ):
 
         key = (
             doc.metadata.get("source"),
@@ -201,20 +341,25 @@ def ask_question(question):
 
             candidates[key] = {
                 "doc": doc,
-                # BM25 results come after semantic results
-                "score": 1.7 + (rank * 0.01)
+                "score": 1.7 + (
+                    rank * 0.01
+                )
             }
 
-    # --------------------------------------------------
+    # --------------------------------------------------------
     # No relevant documents
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
-    if not candidates:
-        return FALLBACK, []
+    if not semantic_docs:
 
-    # --------------------------------------------------
+        return (
+            FALLBACK,
+            []
+        )
+
+    # --------------------------------------------------------
     # Rank
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     ranked = sorted(
         candidates.values(),
@@ -226,18 +371,27 @@ def ask_question(question):
         for item in ranked[:5]
     ]
 
-    # --------------------------------------------------
-    # Context
-    # --------------------------------------------------
+    if not documents:
+
+        return (
+            FALLBACK,
+            []
+        )
+
+    # --------------------------------------------------------
+    # Build context
+    # --------------------------------------------------------
 
     context = "\n\n".join(
-        clean_text(doc.page_content)
+        clean_text(
+            doc.page_content
+        )
         for doc in documents
     )
 
-    # --------------------------------------------------
+    # --------------------------------------------------------
     # Prompt
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     prompt = f"""<|im_start|>system
 You are a documentation question-answering assistant.
@@ -250,6 +404,7 @@ Rules:
 - Do not guess.
 - Do not infer.
 - Do not invent information.
+- Do not answer from general knowledge.
 - If the documentation does not contain the answer, say exactly:
 
 I couldn't find that information in the documentation.
@@ -270,9 +425,9 @@ QUESTION:
 <|im_start|>assistant
 """
 
-    # --------------------------------------------------
-    # Generate
-    # --------------------------------------------------
+    # --------------------------------------------------------
+    # Generate answer
+    # --------------------------------------------------------
 
     result = generator(
         prompt,
@@ -281,33 +436,42 @@ QUESTION:
         do_sample=False
     )
 
-    answer = result[0]["generated_text"].strip()
+    answer = (
+        result[0]["generated_text"]
+        .strip()
+    )
 
-    # --------------------------------------------------
-    # Clean output
-    # --------------------------------------------------
+    # --------------------------------------------------------
+    # Clean generated output
+    # --------------------------------------------------------
 
     answer = answer.split(
         "<|im_end|>"
     )[0].strip()
 
     if not answer:
+
         answer = FALLBACK
 
     lower_answer = answer.lower()
 
     if (
         "couldn't find" in lower_answer
-        or "could not find" in lower_answer
-        or "not found in the documentation" in lower_answer
-        or "not mentioned in the documentation" in lower_answer
-        or "not provided in the documentation" in lower_answer
+        or
+        "could not find" in lower_answer
+        or
+        "not found in the documentation" in lower_answer
+        or
+        "not mentioned in the documentation" in lower_answer
+        or
+        "not provided in the documentation" in lower_answer
     ):
+
         answer = FALLBACK
 
-    # --------------------------------------------------
+    # --------------------------------------------------------
     # Sources
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     sources = []
 
@@ -325,9 +489,18 @@ QUESTION:
 
         seen.add(key)
 
-        sources.append({
-            "source": doc.metadata.get("source"),
-            "page": doc.metadata.get("page")
-        })
+        sources.append(
+            {
+                "source": doc.metadata.get(
+                    "source"
+                ),
+                "page": doc.metadata.get(
+                    "page"
+                )
+            }
+        )
 
-    return answer, sources
+    return (
+        answer,
+        sources
+    )
