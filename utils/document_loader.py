@@ -1,44 +1,25 @@
 from pathlib import Path
-from pypdf import PdfReader
+from langchain_community.document_loaders import (
+    TextLoader,
+    PyPDFLoader
+)
 
-def load_markdown(path):
+def load_documents(folder="docs"):
+    documents = []
 
-    with open(path, "r", encoding="utf-8") as file:
-        return file.read()
-    
-def load_text(path):
+    for file in Path(folder).glob("*"):
+        if file.suffix == ".pdf":
+            loader = PyPDFLoader(str(file))
 
-    with open(path, "r", encoding="utf-8") as file:
-        return file.read()
-    
-def load_pdf(path):
+        elif file.suffix in [".txt", ".md"]:
+            loader = TextLoader(
+                str(file),
+                encoding="utf-8"
+            )
 
-    reader = PdfReader(path)
+        else:
+            continue
 
-    text = ""
+        documents.extend(loader.load())
 
-    for page in reader.pages:
-        extracted = page.extract_text()
-
-        if extracted:
-            text += extracted + "\n"
-
-    return text
-
-def load_document(path):
-
-    extension = Path(path).suffix.lower()
-
-    if extension == ".md":
-        return load_markdown(path)
-
-    elif extension == ".txt":
-        return load_text(path)
-
-    elif extension == ".pdf":
-        return load_pdf(path)
-
-    else:
-        raise ValueError(
-            f"Unsupported file type: {extension}"
-        )
+    return documents

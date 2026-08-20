@@ -1,99 +1,246 @@
+import os
 import streamlit as st
-from rag.pipeline import ask_question
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+from langchain_community.document_loaders import (
+    PyPDFLoader,
+    TextLoader,
+    UnstructuredMarkdownLoader
+)
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from langchain_app.rag import ask_question, rebuild_vectorstore
+
 
 st.set_page_config(
     page_title="API Documentation Assistant",
     page_icon="🤖",
-    layout="centered"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
+
+# ---------- CSS ----------
+st.markdown("""
+<style>
+    .block-container {
+        max-width: 1100px;
+        padding-top: 2rem;
+        padding-bottom: 6rem;
+    }
+
+    .title {
+        font-size: 2.2rem;
+        font-weight: 700;
+        margin-bottom: 0.2rem;
+    }
+
+    .subtitle {
+        color: #777;
+        margin-bottom: 2rem;
+    }
+
+    .answer-box {
+        padding: 1rem 1.2rem;
+        border-radius: 12px;
+        background: rgba(128,128,128,0.08);
+        margin-top: 0.5rem;
+        margin-bottom: 1rem;
+        line-height: 1.6;
+    }
+
+    .source {
+        color: #777;
+        font-size: 0.85rem;
+        margin: 0.2rem 0;
+    }
+
+    .question-label {
+        color: #777;
+        font-size: 0.85rem;
+        margin-bottom: 0.2rem;
+    }
+
+    section[data-testid="stSidebar"] {
+        padding-top: 1rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ---------- Session State ----------
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+if "uploaded_file" not in st.session_state:
+    st.session_state.uploaded_file = None
+
+
+# ---------- Sidebar ----------
 with st.sidebar:
 
-    st.title("🤖 API Assistant")
+    st.title("📁 Documentation")
 
-    st.markdown("---")
-
-    st.markdown("### 🚀 Tech Stack")
-
-    st.markdown("""
-- 🧠 Gemini 3.5 Flash
-- 🔍 FAISS Vector Search
-- 📄 Sentence Transformers
-- ⚡ Streamlit
-""")
-
-    st.markdown("---")
-
-    st.markdown("### 📚 About")
-
-    st.info(
-        "Ask questions about your API documentation."
+    uploaded_file = st.file_uploader(
+        "Upload Documentation",
+        type=["pdf", "txt", "md"],
+        help="Upload PDF, TXT or Markdown documentation."
     )
 
-    if st.button("🗑️ Clear Chat"):
+    st.caption("200 MB per file • PDF, TXT, MD")
 
-        st.session_state.messages = []
+    if uploaded_file:
 
-        st.rerun()
+        os.makedirs("data/uploads", exist_ok=True)
 
-st.title("🤖 AI Documentation Assistant")
+        file_path = os.path.join(
+            "data/uploads",
+            uploaded_file.name
+        )
 
-st.caption(
-    "Ask questions about your documentation using Retrieval-Augmented Generation (RAG)."
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+
+        st.session_state.uploaded_file = uploaded_file.name
+
+        st.success(
+            f"Uploaded: {uploaded_file.name}"
+        )
+
+        # Load document
+        if file_path.lower().endswith(".pdf"):
+            loader = PyPDFLoader(file_path)
+
+        elif file_path.lower().endswith(".md"):
+            loader = UnstructuredMarkdownLoader(file_path)
+
+        else:
+            loader = TextLoader(
+                file_path,
+                encoding="utf-8"
+            )
+
+        docs = loader.load()
+
+        # Split document
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=800,
+            chunk_overlap=100
+        )
+
+        chunks = splitter.split_documents(docs)
+
+        # Build FAISS vector store
+        rebuild_vectorstore(chunks)
+
+        st.success(
+            f"Documentation indexed: {len(chunks)} chunks"
+        )
+
+    elif st.session_state.uploaded_file:
+
+        st.info(
+            f"Current document:\n"
+            f"{st.session_state.uploaded_file}"
+        )
+
+
+# ---------- Main ----------
+st.markdown(
+    '<div class="title">🤖 API Documentation Assistant</div>',
+    unsafe_allow_html=True
 )
 
-# Display chat history
-for message in st.session_state.messages:
+st.markdown(
+    '<div class="subtitle">'
+    'Ask questions about your uploaded documentation.'
+    '</div>',
+    unsafe_allow_html=True
+)
 
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
 
-st.write("Ask questions about your API documentation.")
+# ---------- Chat History ----------
+for item in st.session_state.history:
 
+    st.markdown(
+        '<div class="question-label">You</div>',
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        f"**{item['question']}**"
+    )
+
+    st.markdown(
+        '<div class="question-label">Assistant</div>',
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        f'<div class="answer-box">{item["answer"]}</div>',
+        unsafe_allow_html=True
+    )
+
+    if item["sources"]:
+
+        st.markdown("**📚 Sources**")
+
+        seen = set()
+
+        for source in item["sources"]:
+
+            key = (
+                source.get("source"),
+                source.get("page")
+            )
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            filename = os.path.basename(
+                source.get("source", "Unknown")
+            )
+
+            page = source.get("page")
+
+            if page is not None:
+
+                st.markdown(
+                    f'<div class="source">'
+                    f'📄 {filename} — Page {page + 1}'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+            else:
+
+                st.markdown(
+                    f'<div class="source">'
+                    f'📄 {filename}'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+    st.divider()
+
+
+# ---------- Bottom Question Input ----------
 question = st.chat_input(
-    "Ask a question:"
-    # placeholder="Example: How do I authenticate?"
+    "Ask a question about your documentation..."
 )
+
 
 if question:
 
-    question = question.strip()
-
-    if not question:
-        st.warning("Please enter a valid question.")
-        st.stop()
-
-    st.session_state.messages.append(
-        {
-            "role": "user",
-            "content": question
-        }
-    )
-    with st.chat_message("user"):
-        st.markdown(question)
-    
     with st.spinner("Searching documentation..."):
-        context, answer = ask_question(question)
 
-    with st.chat_message("assistant"):
-        st.markdown(answer)
+        answer, sources = ask_question(question)
 
-    st.session_state.messages.append(
-        {
-            "role": "assistant",
-            "content": answer
-        }
-    )
+    st.session_state.history.append({
+        "question": question,
+        "answer": answer,
+        "sources": sources
+    })
 
-    with st.expander("📄 Source Documentation"):
-        st.write(context)
-
-
-st.markdown("---")
-
-st.caption(
-    "Built with ❤️ using Streamlit, FAISS, Sentence Transformers and Gemini."
-)
+    st.rerun()

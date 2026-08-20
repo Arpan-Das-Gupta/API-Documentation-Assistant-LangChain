@@ -2,7 +2,8 @@ import os
 
 from langchain_community.document_loaders import (
     PyPDFLoader,
-    TextLoader
+    TextLoader,
+    UnstructuredMarkdownLoader
 )
 
 from langchain_text_splitters import (
@@ -17,7 +18,9 @@ from langchain_community.vectorstores import FAISS
 DOCS_DIR = "docs"
 VECTORSTORE_PATH = "vectorstore/langchain_faiss"
 
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL = (
+    "sentence-transformers/all-MiniLM-L6-v2"
+)
 
 
 def load_documents():
@@ -36,13 +39,15 @@ def load_documents():
 
         lower = filename.lower()
 
-        # PDF
         if lower.endswith(".pdf"):
 
             loader = PyPDFLoader(path)
 
-        # TXT / Markdown
-        elif lower.endswith(".txt") or lower.endswith(".md"):
+        elif lower.endswith(".md"):
+
+            loader = UnstructuredMarkdownLoader(path)
+
+        elif lower.endswith(".txt"):
 
             loader = TextLoader(
                 path,
@@ -51,8 +56,6 @@ def load_documents():
 
         else:
             continue
-
-        print(f"Loading: {filename}")
 
         documents.extend(
             loader.load()
@@ -63,23 +66,11 @@ def load_documents():
 
 def main():
 
-    # --------------------------------------------------
-    # Load documents
-    # --------------------------------------------------
-
     documents = load_documents()
 
     print(
-        f"\nLoaded {len(documents)} document pages."
+        f"Loaded {len(documents)} document pages."
     )
-
-    if not documents:
-        print("No documents found in docs/")
-        return
-
-    # --------------------------------------------------
-    # Split documents
-    # --------------------------------------------------
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=800,
@@ -94,26 +85,14 @@ def main():
         f"Created {len(chunks)} chunks."
     )
 
-    # --------------------------------------------------
-    # Embeddings
-    # --------------------------------------------------
-
     embeddings = HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL
     )
-
-    # --------------------------------------------------
-    # Create FAISS
-    # --------------------------------------------------
 
     vectorstore = FAISS.from_documents(
         chunks,
         embeddings
     )
-
-    # --------------------------------------------------
-    # Save
-    # --------------------------------------------------
 
     os.makedirs(
         "vectorstore",
@@ -125,11 +104,7 @@ def main():
     )
 
     print(
-        f"\nFAISS index saved to: {VECTORSTORE_PATH}"
-    )
-
-    print(
-        "Ingestion completed successfully."
+        f"FAISS index saved to {VECTORSTORE_PATH}"
     )
 
 
